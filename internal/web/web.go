@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -28,13 +30,19 @@ func New(bind spec.Address, store spec.Store, geoIP *geoip.GeoIPDatabase, webdir
 		geoIP: geoIP,
 	}
 	if dogeNetAddr != "" {
+		// used by /nodes API
 		a.dogeNetUrl = fmt.Sprintf("http://%v/nodes", dogeNetAddr)
 	}
 	if identityAddr != "" {
+		// used by /nodes API
 		a.identityUrl = fmt.Sprintf("http://%v/locations", identityAddr)
+		// create a proxy for /chits API
+		identityUrl := &url.URL{Scheme: "http", Host: identityAddr, Path: "/"}
+		a.identityProxy = httputil.NewSingleHostReverseProxy(identityUrl)
 	}
 
 	mux.HandleFunc("/nodes", a.getNodes)
+	mux.HandleFunc("/chits", a.getChits)
 
 	fs := http.FileServer(http.Dir(webdir))
 	mux.Handle("/", fs)
@@ -44,12 +52,13 @@ func New(bind spec.Address, store spec.Store, geoIP *geoip.GeoIPDatabase, webdir
 
 type WebAPI struct {
 	governor.ServiceCtx
-	_store      spec.Store
-	store       spec.Store
-	srv         http.Server
-	geoIP       *geoip.GeoIPDatabase
-	dogeNetUrl  string
-	identityUrl string
+	_store        spec.Store
+	store         spec.Store
+	srv           http.Server
+	geoIP         *geoip.GeoIPDatabase
+	dogeNetUrl    string
+	identityUrl   string
+	identityProxy *httputil.ReverseProxy
 }
 
 // called on any
@@ -78,7 +87,7 @@ type MapNode struct {
 	Lon      string  `json:"lon"`
 	City     string  `json:"city"`
 	Country  string  `json:"country"`
-	IPInfo   *string `json:"ipinfo"`   // can encode null
+	IPInfo   *string `json:"ipinfo"`   // always null
 	Identity string  `json:"identity"` // can be empty
 	Core     bool    `json:"core"`     // true if core node
 }
@@ -93,6 +102,27 @@ type IdentChit struct {
 	Lon     string `json:"long"`    // WGS84 +/- 180 degrees, 60 seconds (accurate to 1850m)
 	Country string `json:"country"` // [2] ISO 3166-1 alpha-2 code (optional)
 	City    string `json:"city"`    // [30] city name (optional)
+}
+
+func (a *WebAPI) getChits(w http.ResponseWriter, r *http.Request) {
+	if a.identityProxy != nil {
+		// proxy the request through to identity service,
+		// which also has a /chits API.
+		a.identityProxy.ServeHTTP(w, r)
+	} else {
+		// send an empty array (no identity service available)
+		nodes := make([]MapNode, 0)
+		bytes, err := json.Marshal(nodes)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("error encoding JSON: %s", err.Error()), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Add("Cache-Control", "private; max-age=0")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(bytes)))
+		w.Header().Set("Allow", "POST, OPTIONS")
+		w.Write(bytes)
+	}
 }
 
 func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +221,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 					City:     city,
 					IPInfo:   nil,
 					Identity: "",
+					Core:     true,
 				}
 			}
 		}
@@ -206,6 +237,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("error encoding JSON: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
+		w.Header().Add("Cache-Control", "private; max-age=0")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(bytes)))
 		w.Header().Set("Allow", "GET, OPTIONS")
