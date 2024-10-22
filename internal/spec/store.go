@@ -6,10 +6,10 @@ import (
 
 const SecondsPerDay = 24 * 60 * 60
 
-// Keep core nodes for 3 midnights before expiry.
-// Just before midnight -> 2 days.
-// Just after midnight -> 3 days.
-const MaxCoreNodeDays = 3
+// Keep core nodes with timestamp in the last 2 days.
+// We're relying on the local Core Node's database, which updates
+// slowly as other nodes gossip addresses (about 1 per minute)
+const MaxCoreNodeDays = 2
 
 // Store is the top-level interface (e.g. SQLiteStore)
 // It is bound to a cancellable Context.

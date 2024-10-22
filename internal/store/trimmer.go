@@ -22,10 +22,8 @@ type StoreTrimmer struct {
 // goroutine
 func (sv *StoreTrimmer) Run() {
 	store := sv.store.WithCtx(sv.Context)
-	for {
-		if sv.Sleep(1 * time.Hour) { // once an hour is enough
-			return // stopping
-		}
+	sv.Sleep(1 * time.Minute)
+	for !sv.Stopping() {
 		advanced, remCore, err := store.TrimNodes()
 		if err != nil {
 			log.Printf("[store] TrimNodes: %v", err)
@@ -35,5 +33,6 @@ func (sv *StoreTrimmer) Run() {
 			}
 			log.Printf("[store] TrimNodes: trimmed %v core nodes", remCore)
 		}
+		sv.Sleep(1 * time.Hour) // once an hour is enough
 	}
 }
