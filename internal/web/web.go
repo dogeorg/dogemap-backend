@@ -1,16 +1,12 @@
 package web
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"time"
 
 	"code.dogecoin.org/dogemap-backend/internal/geoip"
@@ -35,7 +31,7 @@ func New(bind spec.Address, store spec.Store, geoIP *geoip.GeoIPDatabase, webdir
 	}
 	if identityAddr != "" {
 		// used by /nodes API
-		a.identityUrl = fmt.Sprintf("http://%v/locations", identityAddr)
+		a.locationsUrl = fmt.Sprintf("http://%v/locations", identityAddr)
 		// create a proxy for /chits API
 		identityUrl := &url.URL{Scheme: "http", Host: identityAddr, Path: "/"}
 		a.identityProxy = httputil.NewSingleHostReverseProxy(identityUrl)
@@ -57,7 +53,7 @@ type WebAPI struct {
 	srv           http.Server
 	geoIP         *geoip.GeoIPDatabase
 	dogeNetUrl    string
-	identityUrl   string
+	locationsUrl  string
 	identityProxy *httputil.ReverseProxy
 }
 
@@ -99,33 +95,30 @@ type GetChit struct {
 
 type IdentChit struct {
 	Lat     string `json:"lat"`     // WGS84 +/- 90 degrees, 60 seconds (accurate to 1850m)
-	Lon     string `json:"long"`    // WGS84 +/- 180 degrees, 60 seconds (accurate to 1850m)
+	Lon     string `json:"lon"`     // WGS84 +/- 180 degrees, 60 seconds (accurate to 1850m)
 	Country string `json:"country"` // [2] ISO 3166-1 alpha-2 code (optional)
 	City    string `json:"city"`    // [30] city name (optional)
 }
 
 func (a *WebAPI) getChits(w http.ResponseWriter, r *http.Request) {
-	if a.identityProxy != nil {
-		// proxy the request through to identity service,
-		// which also has a /chits API.
-		a.identityProxy.ServeHTTP(w, r)
-	} else {
-		// send an empty array (no identity service available)
-		nodes := make([]MapNode, 0)
-		bytes, err := json.Marshal(nodes)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("error encoding JSON: %s", err.Error()), http.StatusInternalServerError)
-			return
+	options := "POST, OPTIONS"
+	if r.Method == http.MethodPost {
+		if a.identityProxy != nil {
+			// proxy /chits through to `identity` service, which returns
+			// an object containing Profiles keyed on identity-hex.
+			// if an identity is not found, it is omitted from the result.
+			a.identityProxy.ServeHTTP(w, r)
+		} else {
+			chits := make(map[string]any) // empty object
+			sendJson(w, chits, options)
 		}
-		w.Header().Add("Cache-Control", "private; max-age=0")
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", strconv.Itoa(len(bytes)))
-		w.Header().Set("Allow", "POST, OPTIONS")
-		w.Write(bytes)
+	} else {
+		sendOptions(w, r, options)
 	}
 }
 
 func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
+	options := "GET, OPTIONS"
 	if r.Method == http.MethodGet {
 		coreNodes, err := a.store.NodeList()
 		if err != nil {
@@ -147,7 +140,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// all identities from the set of nodes
-			if a.identityUrl != "" {
+			if a.locationsUrl != "" {
 				var getChits []GetChit
 				for _, net := range netNodes {
 					if net.Identity != "" {
@@ -159,7 +152,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// fetch identities from `identity` handler
-				err = fetchJson(a.identityUrl, getChits, &identities)
+				err = fetchJson(a.locationsUrl, getChits, &identities)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -232,49 +225,10 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 			nodes = append(nodes, node)
 		}
 
-		bytes, err := json.Marshal(nodes)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("error encoding JSON: %s", err.Error()), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Add("Cache-Control", "private; max-age=0")
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", strconv.Itoa(len(bytes)))
-		w.Header().Set("Allow", "GET, OPTIONS")
-		w.Write(bytes)
+		sendJson(w, nodes, options)
 	} else {
-		options(w, r, "GET, OPTIONS")
+		sendOptions(w, r, options)
 	}
-}
-
-func fetchJson(url string, postData any, result any) (err error) {
-	var res *http.Response
-	if postData != nil {
-		var payload []byte
-		payload, err = json.Marshal(postData)
-		if err != nil {
-			return fmt.Errorf("fetch: %v: json decode: %v", url, err)
-		}
-		res, err = http.Post(url, "application/json", bytes.NewReader(payload))
-	} else {
-		res, err = http.Get(url)
-	}
-	if err != nil {
-		return fmt.Errorf("fetch: %v: %v", url, err)
-	}
-	defer res.Body.Close() // ensure body is closed
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch: %v: status %v", url, res.StatusCode)
-	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return fmt.Errorf("fetch: %v: %v", url, err)
-	}
-	err = json.Unmarshal(body, result)
-	if err != nil {
-		return fmt.Errorf("fetch: %v: json decode: %v", url, err)
-	}
-	return nil
 }
 
 // normalizeIP4 normalizes an Address to IPv4 if possible.
@@ -284,16 +238,4 @@ func normalizeIP4(addr spec.Address) spec.Address {
 		return spec.Address{Host: ipv4, Port: addr.Port}
 	}
 	return addr
-}
-
-func options(w http.ResponseWriter, r *http.Request, options string) {
-	switch r.Method {
-	case http.MethodOptions:
-		w.Header().Set("Allow", options)
-		w.WriteHeader(http.StatusNoContent)
-
-	default:
-		w.Header().Set("Allow", options)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
 }
