@@ -84,6 +84,7 @@ type MapNode struct {
 	City     string  `json:"city"`
 	Country  string  `json:"country"`
 	IPInfo   *string `json:"ipinfo"`   // always null
+	Node     string  `json:"node"`     // node pubkey hex
 	Identity string  `json:"identity"` // can be empty
 	Core     bool    `json:"core"`     // true if core node
 }
@@ -169,6 +170,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 						Country:  profile.Country,
 						City:     profile.City,
 						IPInfo:   nil,
+						Node:     node.PubKey,
 						Identity: node.Identity,
 					}
 				} else {
@@ -189,6 +191,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 						Country:  country,
 						City:     city,
 						IPInfo:   nil,
+						Node:     node.PubKey,
 						Identity: node.Identity,
 					}
 				}
@@ -213,6 +216,7 @@ func (a *WebAPI) getNodes(w http.ResponseWriter, r *http.Request) {
 					Country:  country,
 					City:     city,
 					IPInfo:   nil,
+					Node:     "",
 					Identity: "",
 					Core:     true,
 				}
